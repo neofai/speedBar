@@ -1,0 +1,25 @@
+# Build output
+bin/
+obj/
+artifacts/
+dist*/
+SpeedBar-current/
+SpeedBar-optimized/
+.runtime-packs/
+
+# IDE and user files
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local packages and logs
+packages/
+*.log
+
+# OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>SpeedBar</AssemblyName>
+    <RootNamespace>SpeedBar</RootNamespace>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Authors>Neo</Authors>
+    <Description>A lightweight Windows 11 taskbar network and system monitor.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <DebugType>embedded</DebugType>
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**;dist*\**;SpeedBar-current\**;SpeedBar-optimized\**</DefaultItemExcludes>
+    <ApplicationIcon>Assets\speedbar.ico</ApplicationIcon>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\speedbar.ico" />
+  </ItemGroup>
+</Project>
