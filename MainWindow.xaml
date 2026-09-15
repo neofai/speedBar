@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="SpeedBar" Width="166" Height="42"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
-        ShowInTaskbar="False" Topmost="False" Background="Transparent"
+        ShowInTaskbar="False" ShowActivated="False" Topmost="False" Background="Transparent"
         SizeToContent="WidthAndHeight" Cursor="Arrow">
     <Border x:Name="RootBorder" CornerRadius="5" Padding="10,5"
             MinWidth="176" MinHeight="46" SnapsToDevicePixels="True">

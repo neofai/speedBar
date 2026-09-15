@@ -8,9 +8,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>SpeedBar</AssemblyName>
     <RootNamespace>SpeedBar</RootNamespace>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
     <Authors>Neo</Authors>
     <Description>A lightweight Windows 11 taskbar network and system monitor.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -19,6 +19,7 @@
     <DebugType>embedded</DebugType>
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts\**;dist*\**;SpeedBar-current\**;SpeedBar-optimized\**</DefaultItemExcludes>
     <ApplicationIcon>Assets\speedbar.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
 

@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-SpeedBar 是一个面向 Windows 11 的轻量级任务栏网速/系统状态监控工具。它是单项目 WPF 应用，目标框架为 `.NET 8`，使用 Win32 API 将主窗口嵌入 `Explorer` 任务栏；嵌入失败时回退为贴靠任务栏的无激活悬浮窗。
+SpeedBar 是一个面向 Windows 11 的轻量级任务栏网速/系统状态监控工具。它是单项目 WPF 应用，目标框架为 `.NET 8`，使用 Win32 API 将主窗口保持为贴靠任务栏的无激活悬浮窗（owned overlay）；当前主窗口不再自动嵌入 `Explorer` 任务栏。
 
 - 项目文件：`SpeedBar.csproj`
 - 输出类型：`WinExe`
@@ -23,9 +23,9 @@ SpeedBar 是一个面向 Windows 11 的轻量级任务栏网速/系统状态监�
 │   └── AppSettings.cs             配置模型、JSON 读写
 ├── Services/
 │   ├── SystemMetricsService.cs    网络、CPU、内存采样
-│   ├── TaskbarService.cs          任务栏 HWND 嵌入、定位、回退悬浮窗、DPI 转换
+│   ├── TaskbarService.cs          任务栏悬浮窗、定位、DPI 转换；保留旧嵌入方法
 │   ├── TaskbarLayoutService.cs    UI Automation 扫描任务栏已占用区域
-│   ├── TaskbarHitTarget.cs         原生透明命中窗口和鼠标消息转发
+│   ├── TaskbarHitTarget.cs         旧嵌入路径的原生命中窗口；当前主窗口未使用
 │   └── StartupService.cs           当前用户开机启动注册表项
 ├── Assets/                        图标资源
 ├── build.ps1                      自包含单体 EXE 发布
@@ -38,18 +38,18 @@ SpeedBar 是一个面向 Windows 11 的轻量级任务栏网速/系统状态监�
 
 1. `App.OnStartup` 创建 `Local\\SpeedBar.SingleInstance` Mutex；已有实例时直接退出。
 2. `MainWindow` 加载 `%LOCALAPPDATA%\\SpeedBar\\settings.json`，应用颜色、字体、刷新间隔并创建托盘图标。
-3. `Loaded` 时调用 `TaskbarService.PrepareWindow`，然后尝试把窗口重设为任务栏的 child HWND。
-4. 成功嵌入后，`TaskbarLayoutService` 通过 UI Automation 查找 Explorer 任务栏按钮，`TaskbarService` 按设置选择左侧或右侧安全空位并处理 DPI 转换；系统任务栏靠左对齐时强制 SpeedBar 靠右。
-5. 嵌入失败时，窗口改为无激活、置顶、拥有任务栏的 overlay，并贴靠通知区。
-6. `DispatcherTimer` 定期调用 `SystemMetricsService.Sample()`，更新上传、下载、CPU 和内存文本；非嵌入状态每 5 秒重试嵌入，任务栏布局最多每 500 ms 扫描一次。
-7. 窗口不可拖动；双击打开设置，右键显示托盘菜单。
-8. 退出时必须走 `CloseApplication`，释放命中窗口、托盘图标、系统事件订阅和单实例 Mutex。普通窗口关闭会被拦截并隐藏。
+3. `Loaded` 时调用 `TaskbarService.PrepareWindow`，再通过 `UseOwnedOverlay` 和 `PlaceNearTaskbar` 设置以任务栏为 owner 的无激活、置顶悬浮窗并定位，不切换为任务栏的 child HWND。
+4. `TaskbarLayoutService` 通过 UI Automation 查找 Explorer 任务栏按钮，`TaskbarService` 按设置选择左侧或右侧安全空位并处理 DPI 转换；系统任务栏靠左对齐时强制 SpeedBar 靠右。
+5. 独立的 `_taskbarTimer` 每 1 秒检查主窗口 HWND、恢复显示、重新贴靠并触发布局扫描（扫描间隔至少 500 ms）；任务栏 HWND 改变时清空布局缓存，主窗口 HWND 失效时释放旧窗口资源并创建替代窗口。
+6. `_timer` 按设置的刷新间隔调用 `SystemMetricsService.Sample()`，更新上传、下载、CPU 和内存文本；指标采样与任务栏恢复分别计时。
+7. 窗口不可拖动；WPF 鼠标事件处理双击打开设置和右键显示托盘菜单，透明背景使用极低非零 alpha 保持空白区域可点击。
+8. 退出时必须走 `CloseApplication`，停止两个计时器、释放托盘图标、系统事件订阅和单实例 Mutex。普通窗口关闭会被拦截并隐藏，自动恢复保留用户隐藏状态。
 
 ## 常见修改位置
 
 - 修改主显示内容或布局：`MainWindow.xaml`、`MainWindow.xaml.cs`
 - 修改设置项：同时检查 `AppSettings`、`SettingsWindow.xaml`、`SettingsWindow.xaml.cs` 和 `MainWindow.ApplySettings`
-- 修改任务栏位置/嵌入行为：优先改 `TaskbarService`；布局识别改 `TaskbarLayoutService`；鼠标命中改 `TaskbarHitTarget`；停靠方向还要检查 `AppSettings` 和设置窗口
+- 修改任务栏位置/悬浮窗行为：优先改 `TaskbarService`；布局识别改 `TaskbarLayoutService`；当前鼠标交互改 `MainWindow`（`TaskbarHitTarget` 仅保留供旧嵌入路径使用）；停靠方向还要检查 `AppSettings` 和设置窗口
 - 修改指标计算：`SystemMetricsService`。网络速度是相邻采样的累计字节差，CPU 使用 `GetSystemTimes`，内存使用 `GlobalMemoryStatusEx`
 - 修改开机启动：`StartupService`。写入当前用户 `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`
 - 修改图标或应用资源：`Assets/` 和 `SpeedBar.csproj` 中的资源声明

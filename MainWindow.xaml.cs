@@ -15,26 +15,20 @@ public partial class MainWindow : Window
 {
     private readonly SystemMetricsService _metrics = new();
     private readonly TaskbarLayoutService _taskbarLayout = new();
-    private readonly TaskbarHitTarget _hitTarget;
     private readonly DispatcherTimer _timer = new();
+    private readonly DispatcherTimer _taskbarTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly Forms.NotifyIcon _tray;
     private IReadOnlyList<HorizontalRange>? _occupiedRanges;
     private AppSettings _settings;
     private bool _reallyClosing;
-    private DateTime _nextEmbedAttempt = DateTime.MinValue;
+    private bool _resourcesReleased;
+    private bool _hiddenByUser;
+    private IntPtr _taskbar;
     private DateTime _nextLayoutScan = DateTime.MinValue;
 
     public MainWindow()
     {
         InitializeComponent();
-        _hitTarget = new TaskbarHitTarget
-        {
-            LeftButtonDown = clickCount =>
-            {
-                if (clickCount >= 2) OpenSettings();
-            },
-            RightButtonUp = ShowContextMenu
-        };
         _settings = AppSettings.Load();
         ApplySettings();
 
@@ -50,22 +44,14 @@ public partial class MainWindow : Window
         _tray.DoubleClick += (_, _) => OpenSettings();
 
         _timer.Tick += (_, _) => RefreshMetrics();
-        _timer.Start();
+        _taskbarTimer.Tick += (_, _) => RefreshTaskbar();
         Loaded += OnLoaded;
         PreviewMouseLeftButtonDown += OnMouseLeftButtonDown;
         PreviewMouseRightButtonUp += OnMouseRightButtonUp;
         SizeChanged += (_, _) =>
         {
-            if (TaskbarService.IsEmbedded(this))
-                Dispatcher.BeginInvoke(() =>
-                {
-                    TaskbarService.PlaceEmbedded(
-                        this,
-                        _settings.OffsetX,
-                        _settings.DockLeft,
-                        _occupiedRanges);
-                    _hitTarget.UpdateFromWindow(this);
-                });
+            if (IsLoaded && !_reallyClosing)
+                Dispatcher.BeginInvoke(RefreshTaskbar);
         };
         SystemEvents.DisplaySettingsChanged += OnSystemDisplayChanged;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
@@ -94,6 +80,8 @@ public partial class MainWindow : Window
         TaskbarService.PrepareWindow(this);
         PlaceWindow();
         RefreshMetrics();
+        _timer.Start();
+        _taskbarTimer.Start();
     }
 
     private void RefreshMetrics()
@@ -103,11 +91,32 @@ public partial class MainWindow : Window
         DownloadText.Text = $"↓ {FormatSpeed(value.DownloadBytesPerSecond)}";
         CpuText.Text = $"CPU {value.CpuPercent:0}%";
         MemoryText.Text = $"RAM {value.MemoryPercent:0}%";
-        if (!TaskbarService.IsEmbedded(this) && DateTime.UtcNow >= _nextEmbedAttempt)
+    }
+
+    private void RefreshTaskbar()
+    {
+        if (_reallyClosing) return;
+        // An Explorer crash can invalidate the HWND without raising WPF's Closed event.
+        if (!TaskbarService.HasValidWindow(this))
         {
-            _nextEmbedAttempt = DateTime.UtcNow.AddSeconds(5);
-            PlaceWindow();
+            HandleWindowDestroyed();
+            return;
         }
+        if (_hiddenByUser) return;
+        if (!IsVisible) Show();
+        if (!IsLoaded) return;
+
+        var taskbar = TaskbarService.FindTaskbar();
+        if (_taskbar != taskbar)
+        {
+            _taskbar = taskbar;
+            _occupiedRanges = null;
+            _nextLayoutScan = DateTime.MinValue;
+        }
+
+        // Keep the transparent display as an owned popup. A successful cross-process
+        // SetParent does not guarantee that Explorer will composite a layered WPF child.
+        PlaceWindow();
         UpdateAutomaticPosition();
     }
 
@@ -126,7 +135,8 @@ public partial class MainWindow : Window
     private void ApplySettings()
     {
         RootBorder.Background = _settings.TransparentBackground
-            ? System.Windows.Media.Brushes.Transparent
+            // A nonzero alpha keeps empty areas clickable without a separate native child.
+            ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(1, 0, 0, 0))
             : Brush(_settings.BackgroundColor);
         UploadText.Foreground = Brush(_settings.UploadColor);
         DownloadText.Foreground = Brush(_settings.DownloadColor);
@@ -160,48 +170,41 @@ public partial class MainWindow : Window
 
     private void PlaceWindow()
     {
-        if (TaskbarService.TryEmbedIntoTaskbar(
-                this,
-                _settings.OffsetX,
-                _settings.DockLeft,
-                _occupiedRanges))
-        {
-            _hitTarget.UpdateFromWindow(this);
-            return;
-        }
-
-        _hitTarget.Hide();
+        if (_reallyClosing) return;
         TaskbarService.UseOwnedOverlay(this);
         TaskbarService.PlaceNearTaskbar(
             this,
             _settings.OffsetX,
             _settings.OffsetY,
-            _settings.DockLeft);
+            _settings.DockLeft,
+            _occupiedRanges);
     }
 
     private void ResetPosition()
     {
+        if (_reallyClosing) return;
+        _hiddenByUser = false;
+        if (_timer.IsEnabled && !TaskbarService.HasValidWindow(this))
+        {
+            HandleWindowDestroyed();
+            return;
+        }
         _occupiedRanges = null;
         _nextLayoutScan = DateTime.MinValue;
+        if (!IsVisible) Show();
         PlaceWindow();
     }
 
     private async void UpdateAutomaticPosition()
     {
-        if (!TaskbarService.IsEmbedded(this) ||
-            DateTime.UtcNow < _nextLayoutScan)
+        if (_taskbar == IntPtr.Zero || DateTime.UtcNow < _nextLayoutScan)
             return;
 
         _nextLayoutScan = DateTime.UtcNow.AddMilliseconds(500);
+        var taskbar = _taskbar;
         var ranges = await _taskbarLayout.ScanOccupiedRangesAsync();
-        if (ranges is null || _reallyClosing) return;
+        if (ranges is null || _reallyClosing || taskbar != TaskbarService.FindTaskbar()) return;
         _occupiedRanges = ranges;
-        TaskbarService.PlaceEmbedded(
-            this,
-            _settings.OffsetX,
-            _settings.DockLeft,
-            _occupiedRanges);
-        _hitTarget.UpdateFromWindow(this);
     }
 
     private void OnSystemDisplayChanged(object? sender, EventArgs e) =>
@@ -249,16 +252,51 @@ public partial class MainWindow : Window
         if (!_reallyClosing)
         {
             e.Cancel = true;
+            _hiddenByUser = true;
             Hide();
             return;
         }
+        base.OnClosing(e);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        HandleWindowDestroyed();
+        base.OnClosed(e);
+    }
+
+    private void HandleWindowDestroyed()
+    {
+        // Destroying Explorer's native parent can destroy our HWND without OnClosing.
+        // A disposed WPF Window cannot be shown again; replace it after releasing its resources.
+        if (_resourcesReleased) return;
+        _resourcesReleased = true;
+        var restart = !_reallyClosing;
+        _reallyClosing = true;
         _timer.Stop();
-        _hitTarget.Dispose();
+        _taskbarTimer.Stop();
         SystemEvents.DisplaySettingsChanged -= OnSystemDisplayChanged;
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _tray.Visible = false;
         _tray.Dispose();
-        System.Windows.Application.Current.Shutdown();
-        base.OnClosing(e);
+        var application = System.Windows.Application.Current;
+        if (application is null) return;
+        if (!restart)
+        {
+            application.Shutdown();
+            return;
+        }
+
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished ||
+                System.Windows.Application.Current != application ||
+                (application.MainWindow is not null && application.MainWindow != this)) return;
+            var replacement = new MainWindow();
+            replacement._hiddenByUser = _hiddenByUser;
+            application.MainWindow = replacement;
+            if (!_hiddenByUser) replacement.Show();
+        });
     }
 }

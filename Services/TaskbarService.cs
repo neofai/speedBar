@@ -18,6 +18,8 @@ public static class TaskbarService
     private const long WsExTopmost = 0x00000008L;
     private const long WsExNoActivate = 0x08000000L;
     private const uint SwpNoActivate = 0x0010;
+    private const uint SwpNoZOrder = 0x0004;
+    private const uint SwpFrameChanged = 0x0020;
     private const uint SwpShowWindow = 0x0040;
     private const uint SwpNoOwnerZOrder = 0x0200;
 
@@ -47,7 +49,8 @@ public static class TaskbarService
     {
         var hwnd = new WindowInteropHelper(window).Handle;
         var taskbar = FindTaskbar();
-        if (hwnd == IntPtr.Zero || taskbar == IntPtr.Zero) return false;
+        if (!IsWindow(hwnd) || !TryGetTaskbarRect(taskbar, out _) ||
+            !IsWindowVisible(taskbar)) return false;
 
         if (!IsEmbedded(window))
         {
@@ -63,19 +66,22 @@ public static class TaskbarService
             if (GetParent(hwnd) != taskbar) return false;
         }
 
-        PlaceEmbedded(window, offsetX, dockLeft, occupiedRanges);
-        return true;
+        return PlaceEmbedded(window, offsetX, dockLeft, occupiedRanges);
     }
+
+    public static bool HasValidWindow(Window window) =>
+        IsWindow(new WindowInteropHelper(window).Handle);
 
     public static bool IsEmbedded(Window window)
     {
         var hwnd = new WindowInteropHelper(window).Handle;
-        if (hwnd == IntPtr.Zero) return false;
+        var taskbar = FindTaskbar();
+        if (!IsWindow(hwnd) || taskbar == IntPtr.Zero || !IsWindow(taskbar)) return false;
         var style = GetWindowLongPtr(hwnd, GwlStyle).ToInt64();
-        return (style & WsChild) != 0 && GetParent(hwnd) == FindTaskbar();
+        return (style & WsChild) != 0 && GetParent(hwnd) == taskbar;
     }
 
-    public static void PlaceEmbedded(
+    public static bool PlaceEmbedded(
         Window window,
         double offsetX,
         bool dockLeft,
@@ -83,13 +89,15 @@ public static class TaskbarService
     {
         var hwnd = new WindowInteropHelper(window).Handle;
         var taskbar = FindTaskbar();
-        if (hwnd == IntPtr.Zero || taskbar == IntPtr.Zero || GetParent(hwnd) != taskbar) return;
-        if (!GetWindowRect(taskbar, out var taskbarRect)) return;
+        if (!IsWindow(hwnd) || !TryGetTaskbarRect(taskbar, out var taskbarRect) ||
+            GetParent(hwnd) != taskbar) return false;
 
         var source = PresentationSource.FromVisual(window);
         var toDevice = source?.CompositionTarget?.TransformToDevice ?? System.Windows.Media.Matrix.Identity;
-        var width = Math.Max(1, (int)Math.Ceiling(window.ActualWidth * toDevice.M11));
-        var height = Math.Max(1, (int)Math.Ceiling(window.ActualHeight * toDevice.M22));
+        // Native taskbar clipping must not become the next requested WPF size.
+        var contentSize = (window.Content as FrameworkElement)?.DesiredSize ?? default;
+        var width = Math.Max(1, (int)Math.Ceiling(Math.Max(window.ActualWidth, contentSize.Width) * toDevice.M11));
+        var height = Math.Max(1, (int)Math.Ceiling(Math.Max(window.ActualHeight, contentSize.Height) * toDevice.M22));
         var margin = (int)Math.Round(Math.Max(0, offsetX) * toDevice.M11);
         var useLeft = dockLeft && !IsTaskbarLeftAligned();
         var screenX = occupiedRanges is { Count: > 0 }
@@ -103,9 +111,9 @@ public static class TaskbarService
             Math.Max(taskbarRect.Left, taskbarRect.Right - width));
         var screenY = taskbarRect.Top + Math.Max(0, (taskbarRect.Height - height) / 2);
         var clientPoint = new PointNative { X = screenX, Y = screenY };
-        ScreenToClient(taskbar, ref clientPoint);
+        if (!ScreenToClient(taskbar, ref clientPoint)) return false;
 
-        SetWindowPos(
+        return SetWindowPos(
             hwnd,
             HwndTop,
             clientPoint.X,
@@ -175,18 +183,23 @@ public static class TaskbarService
     {
         var hwnd = new WindowInteropHelper(window).Handle;
         var taskbar = FindTaskbar();
-        if (hwnd == IntPtr.Zero) return;
+        if (!IsWindow(hwnd)) return;
 
         var style = GetWindowLongPtr(hwnd, GwlStyle).ToInt64();
-        style = (style | WsPopup) & ~WsChild;
-        SetWindowLongPtr(hwnd, GwlStyle, new IntPtr(style));
-        SetParent(hwnd, IntPtr.Zero);
-        if (taskbar != IntPtr.Zero)
-            SetWindowLongPtr(hwnd, -8, taskbar);
+        var wasChild = (style & WsChild) != 0;
+        var ownerChanged = wasChild || GetWindowLongPtr(hwnd, -8) != taskbar;
+        if (wasChild) SetParent(hwnd, IntPtr.Zero);
+        var popupStyle = (style | WsPopup) & ~WsChild;
+        if (style != popupStyle) SetWindowLongPtr(hwnd, GwlStyle, new IntPtr(popupStyle));
+        if (ownerChanged)
+            SetWindowLongPtr(hwnd, -8, taskbar); // Clear a stale owner while Explorer is unavailable.
 
         var exStyle = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
-        exStyle |= WsExToolWindow | WsExNoActivate | WsExTopmost;
-        SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(exStyle));
+        var overlayStyle = exStyle | WsExToolWindow | WsExNoActivate;
+        if (exStyle != overlayStyle) SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(overlayStyle));
+        // Raise only when attaching to a new taskbar. Repeated HWND_TOPMOST calls
+        // would cover menus and fullscreen windows which have since moved above us.
+        if (!ownerChanged && !wasChild && style == popupStyle && exStyle == overlayStyle) return;
         SetWindowPos(
             hwnd,
             HwndTopmost,
@@ -194,50 +207,67 @@ public static class TaskbarService
             0,
             0,
             0,
-            0x0001 | 0x0002 | SwpNoActivate | SwpNoOwnerZOrder);
+            0x0001 | 0x0002 | SwpNoActivate | SwpNoOwnerZOrder | SwpFrameChanged | SwpShowWindow);
     }
 
     public static void PlaceNearTaskbar(
         Window window,
         double offsetX,
         double offsetY,
-        bool dockLeft)
+        bool dockLeft,
+        IReadOnlyList<HorizontalRange>? occupiedRanges = null)
     {
+        var hwnd = new WindowInteropHelper(window).Handle;
+        if (!IsWindow(hwnd)) return;
+        var taskbar = FindTaskbar();
         var data = new AppBarData { CbSize = Marshal.SizeOf<AppBarData>() };
-        if (SHAppBarMessage(5, ref data) == 0) return;
+        if (!TryGetTaskbarRect(taskbar, out var taskbarRect))
+        {
+            if (SHAppBarMessage(5, ref data) == 0 || data.Rect.Width <= 0 || data.Rect.Height <= 0) return;
+            taskbarRect = data.Rect;
+        }
 
         var source = PresentationSource.FromVisual(window);
-        var transform = source?.CompositionTarget?.TransformFromDevice ?? System.Windows.Media.Matrix.Identity;
-        var topLeft = transform.Transform(new System.Windows.Point(data.Rect.Left, data.Rect.Top));
-        var bottomRight = transform.Transform(new System.Windows.Point(data.Rect.Right, data.Rect.Bottom));
-        var taskbarWidth = bottomRight.X - topLeft.X;
-        var taskbarHeight = bottomRight.Y - topLeft.Y;
+        var toDevice = source?.CompositionTarget?.TransformToDevice ?? System.Windows.Media.Matrix.Identity;
+        var contentSize = (window.Content as FrameworkElement)?.DesiredSize ?? default;
+        var width = Math.Max(1, (int)Math.Ceiling(Math.Max(window.ActualWidth, contentSize.Width) * toDevice.M11));
+        var height = Math.Max(1, (int)Math.Ceiling(Math.Max(window.ActualHeight, contentSize.Height) * toDevice.M22));
+        var margin = (int)Math.Round(Math.Max(0, offsetX) * toDevice.M11);
+        var verticalOffset = (int)Math.Round(offsetY * toDevice.M22);
+        int x, y;
 
-        if (taskbarWidth >= taskbarHeight)
+        if (taskbarRect.Width >= taskbarRect.Height)
         {
-            if (dockLeft && !IsTaskbarLeftAligned())
+            var useLeft = dockLeft && !IsTaskbarLeftAligned();
+            var trayLeft = GetTrayLeft(taskbar, taskbarRect);
+            if (occupiedRanges is { Count: > 0 })
             {
-                window.Left = topLeft.X + offsetX;
+                var ranges = occupiedRanges.Append(new HorizontalRange(trayLeft, taskbarRect.Right)).ToArray();
+                x = FindFreePosition(taskbarRect, ranges, width, margin, useLeft);
             }
             else
-            {
-                var trayLeft = bottomRight.X;
-                var taskbar = FindTaskbar();
-                var tray = FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
-                if (tray != IntPtr.Zero && GetWindowRect(tray, out var trayRect))
-                    trayLeft = transform.Transform(new System.Windows.Point(trayRect.Left, trayRect.Top)).X;
-                window.Left = trayLeft - window.ActualWidth - offsetX;
-            }
-            window.Top = topLeft.Y + Math.Max(0, (taskbarHeight - window.ActualHeight) / 2) - offsetY;
+                x = useLeft ? taskbarRect.Left + margin : trayLeft - width - margin;
+            x = Math.Clamp(x, taskbarRect.Left, Math.Max(taskbarRect.Left, taskbarRect.Right - width));
+            y = taskbarRect.Top + Math.Max(0, (taskbarRect.Height - height) / 2) - verticalOffset;
         }
         else
         {
-            window.Left = topLeft.X + Math.Max(0, (taskbarWidth - window.ActualWidth) / 2);
-            window.Top = bottomRight.Y - window.ActualHeight - offsetY;
+            x = taskbarRect.Left + Math.Max(0, (taskbarRect.Width - width) / 2);
+            y = taskbarRect.Bottom - height - verticalOffset;
         }
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height,
+            SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder | SwpShowWindow);
     }
 
-    private static IntPtr FindTaskbar() => FindWindow("Shell_TrayWnd", null);
+    public static IntPtr FindTaskbar() => FindWindow("Shell_TrayWnd", null);
+
+    private static bool TryGetTaskbarRect(IntPtr taskbar, out RectNative rect)
+    {
+        rect = default;
+        return taskbar != IntPtr.Zero && IsWindow(taskbar) &&
+            GetWindowRect(taskbar, out rect) && rect.Width > 0 && rect.Height > 0 &&
+            GetClientRect(taskbar, out var client) && client.Width > 0 && client.Height > 0;
+    }
 
     private static int GetTrayLeft(IntPtr taskbar, RectNative taskbarRect)
     {
@@ -280,6 +310,15 @@ public static class TaskbarService
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hwnd, out RectNative rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr hwnd, out RectNative rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
 
     [DllImport("user32.dll")]
     private static extern bool ScreenToClient(IntPtr hwnd, ref PointNative point);
