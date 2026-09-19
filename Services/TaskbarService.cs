@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using Microsoft.Win32;
@@ -179,7 +180,61 @@ public static class TaskbarService
         }
     }
 
-    public static void UseOwnedOverlay(Window window)
+    public static bool IsForegroundFullscreen(Window window, ref IntPtr fullscreenWindow)
+    {
+        var foreground = GetForegroundWindow();
+        var taskbar = FindTaskbar();
+        var hwnd = new WindowInteropHelper(window).Handle;
+        var monitor = MonitorFromWindow(taskbar != IntPtr.Zero ? taskbar : hwnd,
+            2 /* MONITOR_DEFAULTTONEAREST */);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(monitor, ref info))
+        {
+            fullscreenWindow = IntPtr.Zero;
+            return false;
+        }
+
+        if (foreground != hwnd && CoversMonitor(foreground, info.Monitor))
+        {
+            fullscreenWindow = foreground;
+            return true;
+        }
+
+        // Moving focus to another monitor does not uncover a fullscreen video here.
+        // Keep tracking it until it exits, minimizes, or an app on this monitor takes focus.
+        if ((foreground == IntPtr.Zero || MonitorFromWindow(foreground, 0) != monitor) &&
+            CoversMonitor(fullscreenWindow, info.Monitor)) return true;
+
+        fullscreenWindow = IntPtr.Zero;
+        return false;
+    }
+
+    private static bool CoversMonitor(IntPtr foreground, RectNative monitor)
+    {
+        if (foreground == IntPtr.Zero || !IsWindowVisible(foreground) || IsIconic(foreground)) return false;
+
+        // Desktop hosts also cover the monitor, but must not suppress the display.
+        var className = new StringBuilder(256);
+        GetClassName(foreground, className, className.Capacity);
+        if (className.ToString() is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
+            return false;
+        if (DwmGetWindowAttribute(foreground, 14 /* DWMWA_CLOAKED */, out var cloaked, sizeof(int)) == 0 &&
+            cloaked != 0) return false;
+
+        if (!GetClientRect(foreground, out var client)) return false;
+
+        // Compare client coordinates in screen space, not GetWindowRect's invisible
+        // resize borders. An ordinary maximized window must not count as fullscreen.
+        // Both conversions use the calling thread's DPI coordinate space.
+        var topLeft = new PointNative { X = client.Left, Y = client.Top };
+        var bottomRight = new PointNative { X = client.Right, Y = client.Bottom };
+        if (!ClientToScreen(foreground, ref topLeft) || !ClientToScreen(foreground, ref bottomRight))
+            return false;
+        return topLeft.X <= monitor.Left && topLeft.Y <= monitor.Top &&
+            bottomRight.X >= monitor.Right && bottomRight.Y >= monitor.Bottom;
+    }
+
+    public static void UseOwnedOverlay(Window window, bool restoreZOrder = false)
     {
         var hwnd = new WindowInteropHelper(window).Handle;
         var taskbar = FindTaskbar();
@@ -197,9 +252,11 @@ public static class TaskbarService
         var exStyle = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
         var overlayStyle = exStyle | WsExToolWindow | WsExNoActivate;
         if (exStyle != overlayStyle) SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(overlayStyle));
-        // Raise only when attaching to a new taskbar. Repeated HWND_TOPMOST calls
-        // would cover menus and fullscreen windows which have since moved above us.
-        if (!ownerChanged && !wasChild && style == popupStyle && exStyle == overlayStyle) return;
+        // Explorer can demote its owned windows when a player goes fullscreen.
+        // Repair that native state even when the owner HWND has not changed.
+        // Otherwise leave Z order alone so that menus can stay above the display.
+        if (!restoreZOrder && !ownerChanged && !wasChild && style == popupStyle &&
+            exStyle == overlayStyle && (exStyle & WsExTopmost) != 0 && IsWindowVisible(hwnd)) return;
         SetWindowPos(
             hwnd,
             HwndTopmost,
@@ -298,6 +355,36 @@ public static class TaskbarService
 
     [StructLayout(LayoutKind.Sequential)]
     private struct PointNative { public int X, Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public RectNative Monitor;
+        public RectNative Work;
+        public uint Flags;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hwnd, StringBuilder className, int maxCount);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hwnd, ref PointNative point);
 
     [DllImport("shell32.dll")]
     private static extern uint SHAppBarMessage(uint message, ref AppBarData data);

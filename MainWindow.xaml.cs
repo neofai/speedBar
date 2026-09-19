@@ -23,6 +23,10 @@ public partial class MainWindow : Window
     private bool _reallyClosing;
     private bool _resourcesReleased;
     private bool _hiddenByUser;
+    private bool _hiddenForFullscreen;
+    private bool _taskbarRefreshQueued;
+    private ForegroundWindowWatcher? _foregroundWatcher;
+    private IntPtr _fullscreenWindow;
     private IntPtr _taskbar;
     private DateTime _nextLayoutScan = DateTime.MinValue;
 
@@ -78,6 +82,7 @@ public partial class MainWindow : Window
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         TaskbarService.PrepareWindow(this);
+        _foregroundWatcher ??= new ForegroundWindowWatcher(QueueTaskbarRefresh);
         PlaceWindow();
         RefreshMetrics();
         _timer.Start();
@@ -103,7 +108,6 @@ public partial class MainWindow : Window
             return;
         }
         if (_hiddenByUser) return;
-        if (!IsVisible) Show();
         if (!IsLoaded) return;
 
         var taskbar = TaskbarService.FindTaskbar();
@@ -118,6 +122,19 @@ public partial class MainWindow : Window
         // SetParent does not guarantee that Explorer will composite a layered WPF child.
         PlaceWindow();
         UpdateAutomaticPosition();
+    }
+
+    private void QueueTaskbarRefresh()
+    {
+        if (_reallyClosing || _taskbarRefreshQueued || Dispatcher.HasShutdownStarted) return;
+        _taskbarRefreshQueued = true;
+        // WinEvent callbacks can reenter. Coalesce them and touch WPF only after
+        // returning to the dispatcher; the timer remains a fallback for missed events.
+        Dispatcher.BeginInvoke(() =>
+        {
+            _taskbarRefreshQueued = false;
+            RefreshTaskbar();
+        });
     }
 
     private static string FormatSpeed(double bytes)
@@ -168,10 +185,22 @@ public partial class MainWindow : Window
         PlaceWindow();
     }
 
-    private void PlaceWindow()
+    private void PlaceWindow(bool restoreZOrder = false)
     {
-        if (_reallyClosing) return;
-        TaskbarService.UseOwnedOverlay(this);
+        if (_reallyClosing || _hiddenByUser) return;
+        // All placement paths (including settings and manual reattach) share this
+        // guard, otherwise SWP_SHOWWINDOW could reveal the overlay over a video.
+        if (TaskbarService.IsForegroundFullscreen(this, ref _fullscreenWindow))
+        {
+            _hiddenForFullscreen = true;
+            if (IsVisible) Hide();
+            return;
+        }
+
+        restoreZOrder |= _hiddenForFullscreen;
+        _hiddenForFullscreen = false;
+        if (!IsVisible) Show();
+        TaskbarService.UseOwnedOverlay(this, restoreZOrder);
         TaskbarService.PlaceNearTaskbar(
             this,
             _settings.OffsetX,
@@ -191,8 +220,7 @@ public partial class MainWindow : Window
         }
         _occupiedRanges = null;
         _nextLayoutScan = DateTime.MinValue;
-        if (!IsVisible) Show();
-        PlaceWindow();
+        PlaceWindow(restoreZOrder: true);
     }
 
     private async void UpdateAutomaticPosition()
@@ -207,13 +235,20 @@ public partial class MainWindow : Window
         _occupiedRanges = ranges;
     }
 
+    private void RefreshTaskbarLayout()
+    {
+        _occupiedRanges = null;
+        _nextLayoutScan = DateTime.MinValue;
+        RefreshTaskbar();
+    }
+
     private void OnSystemDisplayChanged(object? sender, EventArgs e) =>
-        Dispatcher.BeginInvoke(ResetPosition);
+        Dispatcher.BeginInvoke(RefreshTaskbarLayout);
 
     private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
     {
         if (e.Category is UserPreferenceCategory.Desktop or UserPreferenceCategory.General)
-            Dispatcher.BeginInvoke(ResetPosition);
+            Dispatcher.BeginInvoke(RefreshTaskbarLayout);
     }
 
     private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -275,6 +310,8 @@ public partial class MainWindow : Window
         _reallyClosing = true;
         _timer.Stop();
         _taskbarTimer.Stop();
+        _foregroundWatcher?.Dispose();
+        _foregroundWatcher = null;
         SystemEvents.DisplaySettingsChanged -= OnSystemDisplayChanged;
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _tray.Visible = false;

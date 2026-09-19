@@ -14,6 +14,7 @@ SpeedBar is a lightweight network and system monitor for the Windows 11 taskbar.
 - Automatic avoidance of taskbar buttons and notification-area icons
 - Left-side or right-side docking
 - Automatic display and position recovery after Explorer or the taskbar restarts
+- Automatically hides while the foreground video or app is fullscreen on the taskbar's monitor, and restores on exit
 - Tray menu, launch at sign-in, and single-instance operation
 
 ## Requirements
