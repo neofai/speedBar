@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\Services\TaskbarPlacement.cs" Link="Services\TaskbarPlacement.cs" />
+    <Compile Include="..\Services\TaskbarLayoutService.cs" Link="Services\TaskbarLayoutService.cs" />
+    <Compile Include="..\Services\OverlayVisibilityPolicy.cs" Link="Services\OverlayVisibilityPolicy.cs" />
+    <Compile Include="..\Services\FullscreenService.cs" Link="Services\FullscreenService.cs" />
+    <Compile Include="..\Services\SystemMetricsService.cs" Link="Services\SystemMetricsService.cs" />
+    <Compile Include="..\Models\AppSettings.cs" Link="Models\AppSettings.cs" />
+  </ItemGroup>
+</Project>

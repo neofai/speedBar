@@ -19,6 +19,7 @@ public sealed class ForegroundWindowWatcher : IDisposable
     private readonly WinEventProc _callback;
     private IntPtr _foregroundHook;
     private IntPtr _locationHook;
+    private uint _locationProcessId;
     private bool _disposed;
 
     public ForegroundWindowWatcher(Action changed)
@@ -32,9 +33,7 @@ public sealed class ForegroundWindowWatcher : IDisposable
         _foregroundHook = SetWinEventHook(
             EventSystemForeground, EventSystemForeground, IntPtr.Zero, _callback,
             0, 0, WineventOutOfContext);
-        _locationHook = SetWinEventHook(
-            EventObjectLocationChange, EventObjectLocationChange, IntPtr.Zero, _callback,
-            0, 0, WineventOutOfContext);
+        WatchForegroundProcess();
     }
 
     private void OnWinEvent(
@@ -42,21 +41,53 @@ public sealed class ForegroundWindowWatcher : IDisposable
         uint eventThread, uint eventTime)
     {
         if (_disposed) return;
-        if (eventType != EventSystemForeground &&
-            (eventType != EventObjectLocationChange ||
-             objectId != ObjidWindow || childId != ChildidSelf ||
-             hwnd == IntPtr.Zero || hwnd != GetForegroundWindow())) return;
-
-        // OUTOFCONTEXT callbacks are delivered to the thread that installed the hooks.
-        // The owner queues/coalesces its work to avoid reentering WPF from this callback.
         try
         {
+            if (eventType == EventSystemForeground)
+            {
+                WatchForegroundProcess();
+            }
+            else if (eventType != EventObjectLocationChange ||
+                     objectId != ObjidWindow || childId != ChildidSelf ||
+                     hwnd == IntPtr.Zero || hwnd != GetForegroundWindow())
+            {
+                return;
+            }
+
+            // OUTOFCONTEXT callbacks are delivered to the thread that installed the hooks.
+            // The owner queues/coalesces its work to avoid reentering WPF from this callback.
             _changed();
         }
         catch (Exception exception)
         {
             // Managed exceptions must not escape through the native callback boundary.
             System.Diagnostics.Debug.WriteLine(exception);
+        }
+    }
+
+    private void WatchForegroundProcess()
+    {
+        var foreground = GetForegroundWindow();
+        uint processId = 0;
+        if (foreground != IntPtr.Zero)
+            GetWindowThreadProcessId(foreground, out processId);
+        if (processId == _locationProcessId && _locationHook != IntPtr.Zero) return;
+
+        if (_locationHook != IntPtr.Zero)
+        {
+            UnhookWinEvent(_locationHook);
+            _locationHook = IntPtr.Zero;
+        }
+
+        _locationProcessId = processId;
+        // LOCATIONCHANGE is noisy across the desktop. Watch only the current
+        // foreground process, then filter its events to the foreground HWND.
+        // Zero would register a global hook, so do not subscribe while no app is active.
+        if (processId != 0)
+        {
+            _locationHook = SetWinEventHook(
+                EventObjectLocationChange, EventObjectLocationChange, IntPtr.Zero, _callback,
+                processId, 0, WineventOutOfContext);
         }
     }
 
@@ -76,6 +107,7 @@ public sealed class ForegroundWindowWatcher : IDisposable
             UnhookWinEvent(_locationHook);
             _locationHook = IntPtr.Zero;
         }
+        _locationProcessId = 0;
 
         GC.KeepAlive(_callback);
     }
@@ -95,4 +127,7 @@ public sealed class ForegroundWindowWatcher : IDisposable
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
 }

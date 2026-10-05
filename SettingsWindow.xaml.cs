@@ -14,7 +14,7 @@ public partial class SettingsWindow : Window
     public SettingsWindow(AppSettings settings)
     {
         InitializeComponent();
-        Result = Clone(settings);
+        Result = settings.Clone();
         SetButton(UploadColorButton, Result.UploadColor);
         SetButton(DownloadColorButton, Result.DownloadColor);
         SetButton(CpuColorButton, Result.CpuColor);
@@ -33,7 +33,17 @@ public partial class SettingsWindow : Window
             : "系统任务栏居中时可自由选择";
         foreach (ComboBoxItem item in RefreshCombo.Items)
             if ((string)item.Tag == Result.RefreshMilliseconds.ToString()) item.IsSelected = true;
-        if (RefreshCombo.SelectedIndex < 0) RefreshCombo.SelectedIndex = 1;
+        if (RefreshCombo.SelectedIndex < 0)
+        {
+            // Preserve supported custom intervals from existing configuration files.
+            var customInterval = new ComboBoxItem
+            {
+                Tag = Result.RefreshMilliseconds.ToString(),
+                Content = $"{Result.RefreshMilliseconds} 毫秒（自定义）"
+            };
+            RefreshCombo.Items.Add(customInterval);
+            RefreshCombo.SelectedItem = customInterval;
+        }
     }
 
     private void ChooseColor(object sender, RoutedEventArgs e)
@@ -66,32 +76,18 @@ public partial class SettingsWindow : Window
 
     private void SaveClick(object sender, RoutedEventArgs e)
     {
-        Result.UploadColor = (string)UploadColorButton.Tag;
-        Result.DownloadColor = (string)DownloadColorButton.Tag;
-        Result.CpuColor = (string)CpuColorButton.Tag;
-        Result.MemoryColor = (string)MemoryColorButton.Tag;
-        Result.BackgroundColor = (string)BackgroundColorButton.Tag;
+        Result.UploadColor = UploadColorButton.Tag as string ?? Result.UploadColor;
+        Result.DownloadColor = DownloadColorButton.Tag as string ?? Result.DownloadColor;
+        Result.CpuColor = CpuColorButton.Tag as string ?? Result.CpuColor;
+        Result.MemoryColor = MemoryColorButton.Tag as string ?? Result.MemoryColor;
+        Result.BackgroundColor = BackgroundColorButton.Tag as string ?? Result.BackgroundColor;
         Result.TransparentBackground = TransparentBackgroundCheck.IsChecked == true;
         Result.FontSize = FontSizeSlider.Value;
-        Result.RefreshMilliseconds = int.Parse((string)((ComboBoxItem)RefreshCombo.SelectedItem).Tag);
+        if (RefreshCombo.SelectedItem is ComboBoxItem selected && int.TryParse(selected.Tag as string, out var interval))
+            Result.RefreshMilliseconds = interval;
         Result.DockLeft = DockSideCombo.SelectedIndex == 0 && !TaskbarService.IsTaskbarLeftAligned();
         Result.StartWithWindows = StartupCheck.IsChecked == true;
+        Result.Normalize();
         DialogResult = true;
     }
-
-    private static AppSettings Clone(AppSettings s) => new()
-    {
-        UploadColor = s.UploadColor,
-        DownloadColor = s.DownloadColor,
-        CpuColor = s.CpuColor,
-        MemoryColor = s.MemoryColor,
-        BackgroundColor = s.BackgroundColor,
-        TransparentBackground = s.TransparentBackground,
-        FontSize = s.FontSize,
-        RefreshMilliseconds = s.RefreshMilliseconds,
-        OffsetX = s.OffsetX,
-        OffsetY = s.OffsetY,
-        DockLeft = s.DockLeft,
-        StartWithWindows = s.StartWithWindows
-    };
 }

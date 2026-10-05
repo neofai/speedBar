@@ -24,6 +24,7 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        (MainWindow as MainWindow)?.ReleaseResources();
         _mutex?.Dispose();
         base.OnExit(e);
     }

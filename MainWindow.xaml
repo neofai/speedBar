@@ -4,7 +4,8 @@
         Title="SpeedBar" Width="166" Height="42"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True"
         ShowInTaskbar="False" ShowActivated="False" Topmost="False" Background="Transparent"
-        SizeToContent="WidthAndHeight" Cursor="Arrow">
+        Opacity="0" Cursor="Arrow" UseLayoutRounding="True">
+    <Viewbox Stretch="Uniform">
     <Border x:Name="RootBorder" CornerRadius="5" Padding="10,5"
             MinWidth="176" MinHeight="46" SnapsToDevicePixels="True">
         <Grid>
@@ -13,9 +14,9 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition x:Name="NetworkColumn" Width="86"/>
                 <ColumnDefinition Width="12"/>
-                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition x:Name="SystemColumn" Width="64"/>
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="UploadText" Grid.Row="0" Grid.Column="0" Text="↑ 0 B/s"/>
             <TextBlock x:Name="DownloadText" Grid.Row="1" Grid.Column="0" Text="↓ 0 B/s"/>
@@ -23,4 +24,5 @@
             <TextBlock x:Name="MemoryText" Grid.Row="1" Grid.Column="2" Text="RAM 0%"/>
         </Grid>
     </Border>
+    </Viewbox>
 </Window>
